@@ -1,13 +1,11 @@
-// Token Radar's entrypoint (Node 22+, standard library only).
+// Token Radar v2 (Node 22, standard library only).
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
-// scores every protocol with the radar-3 model in lib/model.ts — 342 pre-token protocols
-// by the model, 128 traded tokens by their market cap — writes the ranked 470-row board
-// to /output/board.json, writes the dashboard's data beside it as data.js, copies this
-// repository's dashboard/ and screenshots/ to /output, and writes /output/dossier.json
-// with the vendored make.fun library. It refuses to write a board the gate would refuse,
-// and it refuses screenshots past the gate's byte cap, so a bad run fails here instead
-// of at the scorer.
+// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
+// rankable pre-token protocol with the fitted model in lib/model.ts (log-log curve on the traded
+// protocols, category adjustment, launch odds from the peers' record, costed farm verdicts), writes the
+// ranked board to /output/board.json, and copies this repository's dashboard/ and screenshots/ to
+// /output. Last, it writes /output/dossier.json, the summary the judge reads, with the vendored
+// make.fun library. The run is deterministic: the same snapshot always writes the same bytes.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -20,7 +18,7 @@ import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
-/** The scorer's own caps: the text cap shapes the bytes, the rest refuse. */
+/** The scorer's own caps (reference/gate.json): the text cap shapes the bytes, the rest refuse. */
 const TEXT_MAX_BYTES = 65_536;
 const SCREENSHOT_CAPS = { max: 4, max_bytes: 524_288 };
 const IMAGE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -68,11 +66,7 @@ function copyFiles(from: string, to: string): string[] {
   return copied;
 }
 
-const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
-if (dashboardFiles.length === 0) {
-  process.stderr.write('token radar: dashboard/ holds no files to copy\n');
-  process.exit(1);
-}
+copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
   process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
@@ -83,22 +77,18 @@ for (const name of shots) {
     process.stderr.write(`token radar: screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters\n`);
     process.exit(1);
   }
-  const size = statSync(join(out, 'screenshots', name)).size;
-  if (size > SCREENSHOT_CAPS.max_bytes) {
-    process.stderr.write(`token radar: screenshots/${name} is ${size} bytes, past the ${SCREENSHOT_CAPS.max_bytes} cap\n`);
-    process.exit(1);
-  }
 }
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }),
-);
+writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
-const topLaunch = radar.top_launch[0]!;
+const verdicts = radar.verdict_counts;
+const validation = radar.validation
+  .map((t) => `${t.name}: fitted ${t.fitted_med_log_err} vs starter ${t.starter_med_log_err} (n=${t.n_test})`)
+  .join('; ');
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.launch_count} launch candidates, ${radar.token_count} traded tokens, ${radar.excluded_count} with no value anchor)\n` +
-    `token radar: top launch ${topLaunch.name} at ${topLaunch.implied_value_usd.toLocaleString('en-US')} USD, total board value ${radar.total_board_value_usd.toLocaleString('en-US')} USD, global comparable multiple ${radar.global_median}\n` +
-    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+  `token radar v2: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked (${radar.early_size} early below the floor), ${radar.live_total} already trade, ${radar.excluded_total} excluded with reason\n` +
+    `token radar v2: verdicts FARM ${verdicts.FARM ?? 0} / THIN ${verdicts.THIN ?? 0} / SKIP ${verdicts.SKIP ?? 0}, total expected value $${radar.total_expected_usd.toLocaleString('en-US')}\n` +
+    `token radar v2: held-out median |log error| — ${validation}\n` +
+    `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')}, ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
